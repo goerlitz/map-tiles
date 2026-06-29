@@ -57,14 +57,16 @@ Danach **über alle Blätter**:
 ## DANACH (Web-Kacheln)
 
 ```bash
-gdal2tiles.py --zoom=8-17 --xyz --processes=4 --webviewer=openlayers mosaik.vrt tiles/
+gdal2tiles.py --zoom=8-16 --resampling=lanczos --tiledriver=WEBP --xyz --processes=4 --webviewer=openlayers mosaik.vrt tiles/
 ```
 
 - `--xyz` — Kachelschema für OpenLayers/Leaflet (nicht das alte TMS)
 - `gdal2tiles` projiziert selbst nach Web-Mercator (EPSG:3857) — der eingebettete
   `+towgs84` sorgt für die korrekte Lage
-- Zoom **17** ist das echte Detaillimit von 600-dpi-Scans; 18 wäre nur leere
-  Vergrößerung. `--webviewer=openlayers` legt eine `openlayers.html` zum Testen an.
+- `--resampling=lanczos` sorgt fuer weiche Skalierung, `--tiledriver=WEBP` reduziert
+  die Kachelgroesse deutlich.
+- Zoom **16** ist hier das gesetzte Detaillimit. `--webviewer=openlayers` legt eine
+  `openlayers.html` zum Testen an.
 
 ---
 
@@ -78,3 +80,9 @@ gdal2tiles.py --zoom=8-17 --xyz --processes=4 --webviewer=openlayers mosaik.vrt 
 
 GDAL mit Python-Bindings (`osgeo`) und `numpy`. `GCP_HOMOGRAPHY` braucht ein
 neueres GDAL (≥ 3.5).
+
+## Verhalten bei erneutem Lauf
+
+- Wenn `<name>_clip.tif` bereits existiert, wird die Georeferenzierung fuer dieses Blatt uebersprungen.
+- Die Farbangleichung (`<name>_clip_harm.tif`) laeuft weiterhin fuer alle verfuegbaren Clips.
+- `mosaik.vrt` wird bei jedem Lauf neu aufgebaut.

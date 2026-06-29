@@ -24,7 +24,7 @@ Aufruf:
     python3 process_all.py [ORDNER]
 
 Danach kacheln:
-    gdal2tiles.py --zoom=8-17 --xyz --processes=4 --webviewer=openlayers mosaik.vrt tiles/
+    gdal2tiles.py --zoom=8-16 --resampling=lanczos --tiledriver=WEBP --xyz --processes=4 --webviewer=openlayers mosaik.vrt tiles/
 """
 
 from __future__ import annotations
@@ -209,14 +209,18 @@ def main() -> int:
     for pf in points_files:
         src = pf.with_name(pf.name[: -len(".points")])   # .points abschneiden -> Original
         if not src.exists():
-            print(f"  [skip] {pf.name}: Original {src.name} fehlt")
+            print(f"  [skip-invalid] {pf.name}: Original {src.name} fehlt")
             continue
         gcps, bbox = read_gcps(pf)
         if len(gcps) < 3 or bbox is None:
-            print(f"  [skip] {pf.name}: nur {len(gcps)} aktive Punkte")
+            print(f"  [skip-invalid] {pf.name}: nur {len(gcps)} aktive Punkte")
             continue
         opts = opts_for(src.suffix)                       # JPG-Quelle -> JPEG, TIF -> DEFLATE
         out = src.with_name(src.stem + CLIP_SUFFIX)
+        if out.exists():
+            clips.append((out, opts))
+            print(f"  [skip-existing] {src.name}: {out.name} existiert bereits")
+            continue
         try:
             georeference_and_clip(src, gcps, bbox, out, opts)
             clips.append((out, opts))
@@ -243,8 +247,8 @@ def main() -> int:
     vrt = folder / "mosaik.vrt"
     gdal.BuildVRT(str(vrt), [str(p) for p in produced])
     print(f"\nFertig. Mosaik: {vrt}")
-    print("Kacheln:  gdal2tiles.py --zoom=8-17 --xyz --processes=4 "
-          "--webviewer=openlayers mosaik.vrt tiles/")
+    print("Kacheln:  gdal2tiles.py --zoom=8-16 --resampling=lanczos "
+          "--tiledriver=WEBP --xyz --processes=4 --webviewer=openlayers mosaik.vrt tiles/")
     return 0
 
 
