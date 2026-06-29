@@ -3,27 +3,27 @@
 process_all.py
 ==============
 
-Komplette Pipeline pro Ordner, in EINEM Lauf:
+Complete folder pipeline in ONE run:
 
-  fuer jede  *.points :
-      1. Original-Scan finden  (Dateiname = .points OHNE die Endung .points)
-      2. aus den 4 aktiven Punkten georeferenzieren -> DHDN / EPSG:4314
-      3. in DHDN auf den Kartenrahmen zuschneiden (achsenparalleles Rechteck)
-  danach ueber ALLE zugeschnittenen Blaetter:
-      4. Farbstich/Helligkeit angleichen (gemeinsamer Mittelwert/Streuung je Kanal)
-      5. mosaik.vrt bauen
+  for each *.points file:
+      1. Find the original scan (filename = .points name WITHOUT the .points suffix)
+      2. Georeference from the 4 active points -> DHDN / EPSG:4314
+      3. Clip in DHDN to the map frame (axis-aligned rectangle)
+  then across ALL clipped sheets:
+      4. Harmonize color/brightness (shared mean/stddev per channel)
+      5. Build mosaik.vrt
 
-Bewusst NICHT enthalten: Umrechnung nach WGS84/3857. Die macht gdal2tiles am
-Ende selbst -- und Schneiden ist in DHDN (Grad) einfacher, weil der Rahmen dort
-achsenparallel ist.
+Intentionally NOT included: conversion to WGS84/3857. gdal2tiles handles that
+at the end, and clipping is easier in DHDN (degrees) because the frame is
+axis-aligned there.
 
-Projektive Transformation: bildet das trapezfoermige Blatt EXAKT auf das
-Gradrechteck ab -- der richtige Typ fuer topografische Karten.
+Projective transformation maps the trapezoid map sheet EXACTLY to the target
+degree rectangle, which is the correct transform type for topographic maps.
 
-Aufruf:
-    python3 process_all.py [ORDNER]
+Usage:
+    python3 process_all.py [FOLDER]
 
-Danach kacheln:
+Then generate tiles:
     gdal2tiles.py --zoom=8-16 --resampling=lanczos --tiledriver=WEBP --xyz --processes=4 --webviewer=openlayers mosaik.vrt tiles/
 """
 
@@ -37,19 +37,19 @@ from osgeo import gdal
 
 gdal.UseExceptions()
 
-# --- Konfiguration ----------------------------------------------------------
-# DHDN in Grad MIT explizitem Datumsuebergang fuer Schlesien (sonst waehlt PROJ den
-# deutschland-bezogenen Uebergang -> Versatz ueber Polen). Bessel + dein towgs84.
+# --- Configuration ----------------------------------------------------------
+# DHDN in degrees WITH explicit datum shift for Silesia. Otherwise PROJ may pick
+# a Germany-centric shift, causing position offsets over Poland.
 SOURCE_SRS = ("+proj=longlat +ellps=bessel "
               "+towgs84=582,105,414,1.04,0.35,-3.08,8.3 +no_defs")
-RESAMPLING = "lanczos"            # "near" pixeltreu, "cubic"/"lanczos" glaetten
+RESAMPLING = "lanczos"            # "near" pixel-faithful, "cubic"/"lanczos" smooth
 CLIP_SUFFIX = "_clip.tif"
 HARM_SUFFIX = "_clip_harm.tif"
 
 
 def opts_for(suffix: str):
-    """Kompression nach Quell-Endung: JPG-Quelle -> JPEG im TIFF, sonst DEFLATE.
-    JPEG erlaubt nur 3 Baender -> Transparenz laeuft ueber eine interne Maske."""
+    """Compression by source extension: JPG source -> JPEG in TIFF, otherwise DEFLATE.
+    JPEG supports only 3 bands, so transparency is stored as an internal mask."""
     s = suffix.lower()
     if s in (".jpg", ".jpeg"):
         return ["TILED=YES", "COMPRESS=JPEG", "PHOTOMETRIC=YCBCR",
@@ -59,11 +59,11 @@ def opts_for(suffix: str):
 
 
 def read_gcps(points_path: Path):
-    """Liest aktive GCPs + Eckpunkt-Bounding-Box aus einer QGIS-.points-Datei.
+    """Read active GCPs and corner bounding box from a QGIS .points file.
 
-    WICHTIG: QGIS speichert sourceY NEGATIV. GDAL braucht die Zeile positiv
-    (0 = oben), darum line = -sourceY.
-    Rueckgabe: (liste[gdal.GCP], (xmin, ymin, xmax, ymax))
+    IMPORTANT: QGIS stores sourceY as NEGATIVE. GDAL expects positive row values
+    (0 = top), therefore line = -sourceY.
+    Returns: (list[gdal.GCP], (xmin, ymin, xmax, ymax))
     """
     gcps = []
     map_pts = []
@@ -88,7 +88,7 @@ def read_gcps(points_path: Path):
         except ValueError:
             continue
         pixel = src_x
-        row = -src_y                      # <-- die Vorzeichen-Falle
+        row = -src_y                      # <-- sign convention pitfall
         gcps.append(gdal.GCP(map_x, map_y, 0.0, pixel, row))
         map_pts.append((map_x, map_y))
 
@@ -100,8 +100,8 @@ def read_gcps(points_path: Path):
 
 
 def _add_overviews(out_path: Path, opts) -> None:
-    """Interne Pyramiden (wie der QGIS-Georeferencer per gdaladdo) -> schnelle
-    Anzeige beim Zoomen. Overviews in derselben Kompression wie das Bild."""
+    """Build internal pyramids (like QGIS Georeferencer via gdaladdo) for fast
+    zooming. Overviews use the same compression as the source image."""
     comp = next((o.split("=")[1] for o in opts if o.startswith("COMPRESS=")), "DEFLATE")
     gdal.SetConfigOption("COMPRESS_OVERVIEW", comp)
     if comp == "JPEG":
@@ -116,11 +116,11 @@ def _add_overviews(out_path: Path, opts) -> None:
 
 
 def _write_with_mask(mem_ds, out_path: Path, opts, transform=None) -> None:
-    """Schreibt RGB (Band 1-3) + interne Maske (aus dem letzten/Alpha-Band) als TIFF.
-    transform: optionale Funktion band_index->array fuer die Farbangleichung."""
+    """Write RGB (bands 1-3) plus internal mask (from alpha/last band) as TIFF.
+    transform: optional function band_index->array for color harmonization."""
     xsize, ysize = mem_ds.RasterXSize, mem_ds.RasterYSize
     nbands = mem_ds.RasterCount
-    alpha = mem_ds.GetRasterBand(nbands).ReadAsArray()   # 4. Band = Alpha aus dem Warp
+    alpha = mem_ds.GetRasterBand(nbands).ReadAsArray()   # 4th band = alpha from warp
 
     gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
     drv = gdal.GetDriverByName("GTiff")
@@ -133,16 +133,16 @@ def _write_with_mask(mem_ds, out_path: Path, opts, transform=None) -> None:
             arr = transform(b, arr)
         dst.GetRasterBand(b).WriteArray(arr)
     dst.CreateMaskBand(gdal.GMF_PER_DATASET)
-    dst.GetRasterBand(1).GetMaskBand().WriteArray(alpha)   # transparent wo Alpha=0
+    dst.GetRasterBand(1).GetMaskBand().WriteArray(alpha)   # transparent where alpha=0
     dst.FlushCache()
     dst = None
     gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", None)
-    _add_overviews(out_path, opts)                         # Pyramiden -> schnelle Anzeige
+    _add_overviews(out_path, opts)                         # pyramids for fast display
 
 
 def georeference_and_clip(src_raster: Path, gcps, bbox, out_path: Path, opts) -> None:
-    """Georeferenziert projektiv auf DHDN, schneidet auf den Rahmen, schreibt
-    3-Band-TIFF mit interner Maske (kein Alpha-Vollband) in Quell-Kompression."""
+    """Projectively georeference to DHDN, clip to frame, and write a 3-band TIFF
+    with internal mask (no full alpha band) in source-matching compression."""
     gcp_ds = gdal.Translate("", str(src_raster), format="VRT",
                             GCPs=gcps, outputSRS=SOURCE_SRS)
     xmin, ymin, xmax, ymax = bbox
@@ -154,16 +154,16 @@ def georeference_and_clip(src_raster: Path, gcps, bbox, out_path: Path, opts) ->
         resampleAlg=RESAMPLING,
         dstAlpha=True,
         multithread=True,
-        transformerOptions=["SRC_METHOD=GCP_HOMOGRAPHY"],   # projektiv
+        transformerOptions=["SRC_METHOD=GCP_HOMOGRAPHY"],   # projective transform
     )
     _write_with_mask(mem, out_path, opts)
     gcp_ds = mem = None
 
 
-# --- Farbangleichung (ueber alle Blaetter) ----------------------------------
+    # --- Color harmonization (across all sheets) --------------------------------
 
 def tile_stats(path: Path):
-    """Mittelwert/Streuung je RGB-Band, nur gueltige (maskierte) Pixel."""
+    """Mean/stddev per RGB band over valid (masked) pixels only."""
     ds = gdal.Open(str(path))
     mask = ds.GetRasterBand(1).GetMaskBand().ReadAsArray() > 0
     stats = {}
@@ -177,7 +177,7 @@ def tile_stats(path: Path):
 
 
 def harmonize(clip_path: Path, target, opts, out_path: Path):
-    """Liest den Clip, gleicht RGB an, schreibt frisch (komprimiert) + Maske."""
+    """Read clip, harmonize RGB, and write a fresh compressed output with mask."""
     ds = gdal.Open(str(clip_path))
     means_stds = {}
     valid = ds.GetRasterBand(1).GetMaskBand().ReadAsArray() > 0
@@ -194,45 +194,45 @@ def harmonize(clip_path: Path, target, opts, out_path: Path):
 
     _write_with_mask(ds, out_path, opts, transform=transform)
     ds = None
-    print(f"  [harmonisiert] {out_path.name}")
+    print(f"  [harmonized] {out_path.name}")
 
 
 def main() -> int:
     folder = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
     points_files = sorted(folder.glob("*.points"))
     if not points_files:
-        print(f"Keine .points in {folder}")
+        print(f"No .points files found in {folder}")
         return 1
 
-    print(f"{len(points_files)} Blatt/Blaetter -- georeferenziere + schneide ...")
-    clips = []   # (clip_path, opts) je Blatt -- opts traegt die Quell-Kompression
+    print(f"{len(points_files)} sheet(s) -- georeferencing and clipping ...")
+    clips = []   # (clip_path, opts) per sheet; opts preserves source compression
     for pf in points_files:
-        src = pf.with_name(pf.name[: -len(".points")])   # .points abschneiden -> Original
+        src = pf.with_name(pf.name[: -len(".points")])   # strip .points suffix -> source
         if not src.exists():
-            print(f"  [skip-invalid] {pf.name}: Original {src.name} fehlt")
+            print(f"  [skip-invalid] {pf.name}: source {src.name} is missing")
             continue
         gcps, bbox = read_gcps(pf)
         if len(gcps) < 3 or bbox is None:
-            print(f"  [skip-invalid] {pf.name}: nur {len(gcps)} aktive Punkte")
+            print(f"  [skip-invalid] {pf.name}: only {len(gcps)} active points")
             continue
-        opts = opts_for(src.suffix)                       # JPG-Quelle -> JPEG, TIF -> DEFLATE
+        opts = opts_for(src.suffix)                       # JPG source -> JPEG, TIF -> DEFLATE
         out = src.with_name(src.stem + CLIP_SUFFIX)
         if out.exists():
             clips.append((out, opts))
-            print(f"  [skip-existing] {src.name}: {out.name} existiert bereits")
+            print(f"  [skip-existing] {src.name}: {out.name} already exists")
             continue
         try:
             georeference_and_clip(src, gcps, bbox, out, opts)
             clips.append((out, opts))
             print(f"  [ok] {src.name} -> {out.name}  ({opts[1].split('=')[1]})")
         except Exception as exc:
-            print(f"  [FEHLER] {pf.name}: {exc}")
+            print(f"  [ERROR] {pf.name}: {exc}")
 
     if not clips:
-        print("Nichts erzeugt.")
+        print("No outputs produced.")
         return 1
 
-    print("Berechne gemeinsames Farbniveau ...")
+    print("Computing shared color target ...")
     all_stats = {c: tile_stats(c) for c, _ in clips}
     target = {b: (float(np.mean([all_stats[c][b][0] for c, _ in clips])),
                   float(np.mean([all_stats[c][b][1] for c, _ in clips])))
@@ -246,8 +246,8 @@ def main() -> int:
 
     vrt = folder / "mosaik.vrt"
     gdal.BuildVRT(str(vrt), [str(p) for p in produced])
-    print(f"\nFertig. Mosaik: {vrt}")
-    print("Kacheln:  gdal2tiles.py --zoom=8-16 --resampling=lanczos "
+    print(f"\nDone. Mosaic: {vrt}")
+    print("Tiles:  gdal2tiles.py --zoom=8-16 --resampling=lanczos "
           "--tiledriver=WEBP --xyz --processes=4 --webviewer=openlayers mosaik.vrt tiles/")
     return 0
 

@@ -1,88 +1,89 @@
-# Messtischblätter → Web-Kacheln: Ablauf
+# Messtischblaetter to Web Tiles: Workflow
 
-Pipeline, um historische Kartenblätter (Scans + QGIS-Passpunkte) georeferenziert,
-zugeschnitten, farblich angeglichen und als Web-Kacheln auszugeben.
-
----
-
-## DAVOR (manuell, in QGIS)
-
-Jedes Blatt im **QGIS-Georeferencer** mit **4 Eckpunkten** versehen
-(Transformationstyp egal — das Skript rechnet die Entzerrung selbst) und die
-Passpunkte speichern. Ergebnis pro Blatt im selben Ordner:
-
-- `<name>.jpg` oder `<name>.tif` — der Original-Scan
-- `<name>.jpg.points` bzw. `<name>.tif.points` — die 4 Passpunkte (QGIS-Format)
-
-Die `_modified.tif` aus QGIS werden **nicht** gebraucht — das Skript
-georeferenziert aus dem Original selbst.
-
-**Annahmen:** Zielkoordinaten in der `.points` sind **Grad** (DHDN/Greenwich),
-die 4 Punkte sind die **Rahmenecken**, Gebiet ist **Schlesien** (Datumsübergang!).
+Pipeline for historical map sheets (scans + QGIS control points): georeference,
+clip, color-harmonize, and export as web tiles.
 
 ---
 
-## DAS SKRIPT (`process_all.py`)
+## BEFORE (manual, in QGIS)
 
-Aufruf:
+For each sheet, set **4 corner points** in the **QGIS Georeferencer**
+(transform type does not matter, the script performs the transformation itself)
+and save the points. Expected files per sheet in the same folder:
+
+- `<name>.jpg` or `<name>.tif` - original scan
+- `<name>.jpg.points` or `<name>.tif.points` - 4 control points (QGIS format)
+
+The `_modified.tif` created by QGIS is **not** required.
+The script georeferences directly from the original scan.
+
+**Assumptions:** target coordinates in `.points` are in **degrees**
+(DHDN/Greenwich), the 4 points are **frame corners**, area is **Silesia**
+(datum shift matters).
+
+---
+
+## THE SCRIPT (`process_all.py`)
+
+Run:
 
 ```bash
-python3 process_all.py /pfad/zum/ordner
+python3 process_all.py /path/to/folder
 ```
 
-Es durchläuft jede `.points` und macht pro Blatt:
+For each `.points` file it does:
 
-| Schritt | Was | Warum |
-|--------|-----|-------|
-| 1. Original finden | `.points`-Name ohne die Endung `.points` | QGIS benennt die Passpunktdatei nach dem Original |
-| 2. Punkte lesen | 4 aktive Punkte, `sourceY` negiert | QGIS speichert die Pixelzeile **negativ** — ohne Negieren steht das Bild kopf |
-| 3. Georeferenzieren | **projektiv** (`SRC_METHOD=GCP_HOMOGRAPHY`) nach DHDN | Das Blatt ist ein **Trapez** (Meridiane laufen zusammen); nur projektiv bildet Viereck → Gradrechteck exakt ab. Affin/TPS lägen an den Ecken daneben |
-| 4. Datumsübergang | `+towgs84=582,105,414,…` fest eingebettet | Über Polen wählt PROJ sonst den deutschland-bezogenen Übergang → **Lageversatz**. Der feste Parametersatz rechnet überall richtig |
-| 5. Zuschneiden | auf die Bounding-Box der 4 Ecken | In Grad ist der Rahmen achsenparallel → einfacher Rechteckschnitt entfernt Rand/Legende exakt |
-| 6. Schreiben | JPG-Quelle → JPEG im TIFF, TIF-Quelle → DEFLATE; Transparenz als **interne Maske** | Kompression des Originals beibehalten (sonst bläht verlustfreies TIFF ein Ex-JPG auf das ~6-fache); Maske statt Alpha-Vollband spart ein ganzes Band |
-| 7. Pyramiden | interne Overviews 2×–32× | Wie der QGIS-Georeferencer (`gdaladdo`) → schnelle Anzeige beim Zoomen |
+| Step | What | Why |
+|------|------|-----|
+| 1. Find source | remove `.points` suffix from filename | QGIS names the point file after the source image |
+| 2. Read points | 4 active points, negate `sourceY` | QGIS stores pixel row as **negative**; without negation the image is flipped |
+| 3. Georeference | **projective** (`SRC_METHOD=GCP_HOMOGRAPHY`) to DHDN | The sheet is a **trapezoid** (converging meridians); projective is the correct map to degree rectangle |
+| 4. Datum shift | explicit `+towgs84=582,105,414,...` | Over Poland, PROJ may otherwise choose a Germany-centric shift and cause offsets |
+| 5. Clip | to bounding box of the 4 corners | In degree space the frame is axis-aligned, so rectangular clipping is exact |
+| 6. Write output | JPG source -> JPEG-in-TIFF, TIF source -> DEFLATE, transparency as **internal mask** | Preserves practical compression and avoids a full alpha output band |
+| 7. Overviews | internal pyramids 2x-32x | Same concept as QGIS/georeferencer (`gdaladdo`) for faster zoom/display |
 
-Danach **über alle Blätter**:
+Then **across all sheets**:
 
-| Schritt | Was | Warum |
-|--------|-----|-------|
-| 8. Farbangleichung | jedes Blatt auf gemeinsamen Mittelwert/Streuung je Kanal | Scans aus verschiedenen Quellen haben verschiedenen Farbstich; ohne Überlappung ist Angleichung an ein gemeinsames Niveau die richtige Methode |
-| 9. Mosaik | `mosaik.vrt` über alle `_clip_harm.tif` | Leichtgewichtige Referenz auf alle Blätter, ohne sie zu kopieren |
+| Step | What | Why |
+|------|------|-----|
+| 8. Color harmonization | each sheet to shared per-channel mean/stddev | Inputs from different sources have different color casts; this normalizes visual appearance |
+| 9. Mosaic | `mosaik.vrt` over all `_clip_harm.tif` | Lightweight virtual mosaic without duplicating raster data |
 
-**Ausgabe je Blatt:** `<name>_clip.tif` (Zwischenstand) und `<name>_clip_harm.tif`
-(farblich angeglichen, final). Plus `mosaik.vrt`.
+**Output per sheet:** `<name>_clip.tif` (intermediate) and
+`<name>_clip_harm.tif` (harmonized final), plus `mosaik.vrt`.
 
 ---
 
-## DANACH (Web-Kacheln)
+## AFTER (Web Tiles)
 
 ```bash
 gdal2tiles.py --zoom=8-16 --resampling=lanczos --tiledriver=WEBP --xyz --processes=4 --webviewer=openlayers mosaik.vrt tiles/
 ```
 
-- `--xyz` — Kachelschema für OpenLayers/Leaflet (nicht das alte TMS)
-- `gdal2tiles` projiziert selbst nach Web-Mercator (EPSG:3857) — der eingebettete
-  `+towgs84` sorgt für die korrekte Lage
-- `--resampling=lanczos` sorgt fuer weiche Skalierung, `--tiledriver=WEBP` reduziert
-  die Kachelgroesse deutlich.
-- Zoom **16** ist hier das gesetzte Detaillimit. `--webviewer=openlayers` legt eine
-  `openlayers.html` zum Testen an.
+- `--xyz` uses XYZ tile schema for OpenLayers/Leaflet (not legacy TMS)
+- `gdal2tiles` projects to Web Mercator (EPSG:3857); embedded `+towgs84`
+  keeps geographic placement correct
+- `--resampling=lanczos` gives smoother resampling, `--tiledriver=WEBP`
+  significantly reduces tile size
+- Zoom **16** is the configured detail limit, `--webviewer=openlayers`
+  creates `openlayers.html` for quick verification
 
 ---
 
-## Stellschrauben im Skript (oben)
+## Tunables in the Script
 
-- `SOURCE_SRS` — der `+towgs84`-Parametersatz (gilt für Schlesien)
-- `RESAMPLING` — `lanczos` (glättet) / `near` (pixeltreu)
-- `opts_for()` — Kompression je Quell-Endung (JPEG bzw. DEFLATE)
+- `SOURCE_SRS` - `+towgs84` parameter set (for Silesia)
+- `RESAMPLING` - `lanczos` (smoother) / `near` (pixel-faithful)
+- `opts_for()` - output compression by source extension (JPEG vs DEFLATE)
 
-## Voraussetzungen
+## Requirements
 
-GDAL mit Python-Bindings (`osgeo`) und `numpy`. `GCP_HOMOGRAPHY` braucht ein
-neueres GDAL (≥ 3.5).
+GDAL with Python bindings (`osgeo`) and `numpy`.
+`GCP_HOMOGRAPHY` requires a newer GDAL (>= 3.5).
 
-## Verhalten bei erneutem Lauf
+## Behavior on Re-run
 
-- Wenn `<name>_clip.tif` bereits existiert, wird die Georeferenzierung fuer dieses Blatt uebersprungen.
-- Die Farbangleichung (`<name>_clip_harm.tif`) laeuft weiterhin fuer alle verfuegbaren Clips.
-- `mosaik.vrt` wird bei jedem Lauf neu aufgebaut.
+- If `<name>_clip.tif` already exists, georeferencing for that sheet is skipped.
+- Harmonization (`<name>_clip_harm.tif`) still runs for all available clips.
+- `mosaik.vrt` is rebuilt on every run.
