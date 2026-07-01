@@ -115,25 +115,32 @@ def _add_overviews(out_path: Path, opts) -> None:
         gdal.SetConfigOption(k, None)
 
 
-def _write_with_mask(mem_ds, out_path: Path, opts, transform=None) -> None:
-    """Write RGB (bands 1-3) plus internal mask (from alpha/last band) as TIFF.
-    transform: optional function band_index->array for color harmonization."""
-    xsize, ysize = mem_ds.RasterXSize, mem_ds.RasterYSize
-    nbands = mem_ds.RasterCount
-    alpha = mem_ds.GetRasterBand(nbands).ReadAsArray()   # 4th band = alpha from warp
+def _write_with_mask(src_ds, out_path: Path, opts, transform=None) -> None:
+    """Write RGB bands plus internal mask as TIFF.
+
+    If source has 4+ bands, treat the last one as alpha (warp output).
+    If source has only RGB bands, preserve the existing GDAL mask.
+    """
+    xsize, ysize = src_ds.RasterXSize, src_ds.RasterYSize
+    nbands = src_ds.RasterCount
+
+    if nbands >= 4:
+        mask = src_ds.GetRasterBand(nbands).ReadAsArray()
+    else:
+        mask = src_ds.GetRasterBand(1).GetMaskBand().ReadAsArray()
 
     gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", "YES")
     drv = gdal.GetDriverByName("GTiff")
     dst = drv.Create(str(out_path), xsize, ysize, 3, gdal.GDT_Byte, options=opts)
-    dst.SetGeoTransform(mem_ds.GetGeoTransform())
-    dst.SetProjection(mem_ds.GetProjection())
+    dst.SetGeoTransform(src_ds.GetGeoTransform())
+    dst.SetProjection(src_ds.GetProjection())
     for b in range(1, 4):
-        arr = mem_ds.GetRasterBand(b).ReadAsArray()
+        arr = src_ds.GetRasterBand(b).ReadAsArray()
         if transform is not None:
             arr = transform(b, arr)
         dst.GetRasterBand(b).WriteArray(arr)
     dst.CreateMaskBand(gdal.GMF_PER_DATASET)
-    dst.GetRasterBand(1).GetMaskBand().WriteArray(alpha)   # transparent where alpha=0
+    dst.GetRasterBand(1).GetMaskBand().WriteArray(mask)
     dst.FlushCache()
     dst = None
     gdal.SetConfigOption("GDAL_TIFF_INTERNAL_MASK", None)
